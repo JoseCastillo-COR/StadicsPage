@@ -120,7 +120,8 @@ export default function Convertidor() {
         insertStmt.free()
 
         const data = db.export()
-        const blob = new Blob([data], { type: 'application/x-sqlite3' })
+        const blob = new Blob([data.buffer as ArrayBuffer], { type: 'application/x-sqlite3' })
+        //const blob = new Blob([data], { type: 'application/x-sqlite3' })
 
         const outName = file.name.replace(/\.(xlsx|xls)$/i, '') + '.db'
 

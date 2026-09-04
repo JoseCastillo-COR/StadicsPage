@@ -10,10 +10,8 @@ import {
   Brush,
   BarChart,
   Bar,
-  ReferenceLine,
   Area,
   ComposedChart,
-  Cell,
 } from 'recharts'
 import Plot from 'react-plotly.js'
 
@@ -78,6 +76,10 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
     'Rendimientos' | 'Acumulado' | 'Drawdown' | 'Volatilidad' | 'MediaMóvil'
   >('Rendimientos')
 
+  // ========== NUEVOS CONTROLES DE LA FRONTERA ==========
+  const [meanType, setMeanType] = useState<'arithmetic' | 'geometric'>('arithmetic')
+  const [riskType, setRiskType] = useState<'std' | 'variance'>('std')
+
   useEffect(() => {
     if (companies.length > 0) {
       setSelected((prev) => (prev && companies.includes(prev) ? prev : companies[0]))
@@ -110,7 +112,7 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
 
     let cumulative = 1
     let peak = 1
-    const window = 20 // para volatilidad y media móvil
+    const window = 20
 
     return raw.map((r, i) => {
       const ret = r.Rendimiento
@@ -118,12 +120,10 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
       if (cumulative > peak) peak = cumulative
       const drawdown = peak > 0 ? (cumulative - peak) / peak : 0
 
-      // Media móvil
       const start = Math.max(0, i - window + 1)
       const slice = raw.slice(start, i + 1).map((x) => x.Rendimiento)
       const ma = arithmeticMean(slice)
 
-      // Volatilidad móvil (desviación estándar)
       let vol = NaN
       if (slice.length >= 5) {
         const mean = arithmeticMean(slice)
@@ -194,20 +194,27 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
     const nAssets = companies.length
     const mat = returnsMatrix.map((r) => companies.map((c) => r[c]))
 
-    const meanReturns = companies.map((_, j) => {
-      /*let s = 0
-      for (let i = 0; i < nDates; i++) s += mat[i][j]
-      return s / nDates*/
+    // 1. Medias aritméticas (SIEMPRE se usan para centrar la covarianza)
+    const arithMeans = companies.map((_, j) => {
       const returns = mat.map((row) => row[j])
-      return geometricMean(returns)
+      return arithmeticMean(returns)
     })
 
+    // 2. Medias que se usarán en el eje Y (según selector)
+    const meanReturns = companies.map((_, j) => {
+      const returns = mat.map((row) => row[j])
+      return meanType === 'geometric'
+        ? geometricMean(returns)
+        : arithmeticMean(returns)
+    })
+
+    // 3. Matriz de covarianza (SIEMPRE centrada con media aritmética)
     const cov: number[][] = Array.from({ length: nAssets }, () => Array(nAssets).fill(0))
     for (let i = 0; i < nAssets; i++) {
       for (let j = i; j < nAssets; j++) {
         let s = 0
         for (let k = 0; k < nDates; k++) {
-          s += (mat[k][i] - meanReturns[i]) * (mat[k][j] - meanReturns[j])
+          s += (mat[k][i] - arithMeans[i]) * (mat[k][j] - arithMeans[j])
         }
         const v = s / (nDates - 1)
         cov[i][j] = v
@@ -223,9 +230,11 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
       const sum = w.reduce((a, b) => a + b, 0)
       w.forEach((_, i) => (w[i] /= sum))
 
+      // Rendimiento esperado del portafolio (usa meanReturns según selector)
       let pr = 0
       for (let t = 0; t < nAssets; t++) pr += meanReturns[t] * w[t]
 
+      // Varianza del portafolio
       let variance = 0
       for (let a = 0; a < nAssets; a++) {
         for (let b = 0; b < nAssets; b++) {
@@ -233,8 +242,11 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
         }
       }
 
+      // Riesgo según selector
+      const risk = riskType === 'std' ? Math.sqrt(Math.max(0, variance)) : Math.max(0, variance)
+
       points.push({
-        risk: Math.sqrt(Math.max(0, variance)),
+        risk,
         ret: pr,
         weights: [...w],
       })
@@ -263,7 +275,7 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
     }
 
     return { points, frontier, minVol, companies }
-  }, [returnsMatrix, companies])
+  }, [returnsMatrix, companies, meanType, riskType]) // ← dependencias nuevas
 
   const selectedGeom = selected ? geomByCompany[selected] : NaN
   const selectedGeomFmt = formatBoth(selectedGeom)
@@ -275,12 +287,11 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
 
     const { points, frontier, minVol, companies: comps } = portfolioSimulation
 
-    // Texto para el hover de cada punto
     const hoverTexts = points.map((p) => {
       const weightsStr = comps
         .map((c, i) => `${c}: ${(p.weights[i] * 100).toFixed(1)}%`)
         .join('<br>')
-      return `Riesgo: ${p.risk.toFixed(5)}<br>Rendimiento: ${(p.ret * 100).toFixed(4)}%<br><br>${weightsStr}`
+      return `Riesgo: ${p.risk.toFixed(6)}<br>Rendimiento: ${(p.ret * 100).toFixed(4)}%<br><br>${weightsStr}`
     })
 
     return [
@@ -312,15 +323,15 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
         y: [minVol.ret],
         mode: 'markers',
         type: 'scatter',
-        name: 'Mínima varianza',
+        name: riskType === 'std' ? 'Mínima desviación' : 'Mínima varianza',
         marker: { color: '#0f172a', size: 12, symbol: 'diamond' },
         text: [
-          `Mínima varianza<br>Riesgo: ${minVol.risk.toFixed(5)}<br>Rendimiento: ${(minVol.ret * 100).toFixed(4)}%`,
+          `${riskType === 'std' ? 'Mínima desviación' : 'Mínima varianza'}<br>Riesgo: ${minVol.risk.toFixed(6)}<br>Rendimiento: ${(minVol.ret * 100).toFixed(4)}%`,
         ],
         hoverinfo: 'text',
       },
     ]
-  }, [portfolioSimulation])
+  }, [portfolioSimulation, riskType])
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[280px_1fr]">
@@ -406,7 +417,6 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
               Análisis de la serie · {selected ?? '—'}
             </h3>
 
-            {/* Sub-tabs de la serie */}
             <div className="flex flex-wrap gap-2 mb-5">
               {(
                 [
@@ -431,7 +441,6 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
               ))}
             </div>
 
-            {/* Gráfico según sub-tab */}
             <ResponsiveContainer width="100%" height={360}>
               {seriesSubTab === 'Rendimientos' && (
                 <ComposedChart data={enrichedSeries}>
@@ -442,8 +451,8 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                     tick={{ fontSize: 11 }}
                   />
                   <Tooltip
-                    formatter={(v: number) => [
-                      `${v.toFixed(6)} (${(v * 100).toFixed(4)} %)`,
+                    formatter={(v: any) => [
+                      `${Number(v).toFixed(6)} (${(Number(v) * 100).toFixed(4)} %)`,
                       'Rendimiento',
                     ]}
                   />
@@ -459,7 +468,7 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
                   <Tooltip
-                    formatter={(v: number) => [v.toFixed(4), 'Crecimiento de $1']}
+                    formatter={(v: any) => [Number(v).toFixed(4), 'Crecimiento de $1']}
                   />
                   <Line
                     type="monotone"
@@ -482,8 +491,8 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                     tick={{ fontSize: 11 }}
                   />
                   <Tooltip
-                    formatter={(v: number) => [
-                      `${(v * 100).toFixed(2)} %`,
+                    formatter={(v: any) => [
+                      `${(Number(v) * 100).toFixed(2)} %`,
                       'Drawdown',
                     ]}
                   />
@@ -508,8 +517,8 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                     tick={{ fontSize: 11 }}
                   />
                   <Tooltip
-                    formatter={(v: number) => [
-                      Number.isFinite(v) ? `${(v * 100).toFixed(3)} %` : 'N/D',
+                    formatter={(v: any) => [
+                      Number.isFinite(Number(v)) ? `${(Number(v) * 100).toFixed(3)} %` : 'N/D',
                       'Volatilidad (20 periodos)',
                     ]}
                   />
@@ -534,9 +543,9 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                     tick={{ fontSize: 11 }}
                   />
                   <Tooltip
-                    formatter={(v: number, name: string) => [
-                      `${(v * 100).toFixed(4)} %`,
-                      name,
+                    formatter={(v: any, name: any) => [
+                      `${(Number(v) * 100).toFixed(4)} %`,
+                      String(name),
                     ]}
                   />
                   <Line
@@ -574,7 +583,7 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                 <XAxis dataKey="name" />
                 <YAxis tickFormatter={(v) => v.toFixed(4)} />
                 <Tooltip
-                  formatter={(v: number) => [
+                  formatter={(v: any) => [
                     `${v.toFixed(6)} (${(v * 100).toFixed(4)} %)`,
                     'Geométrica',
                   ]}
@@ -583,15 +592,15 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
               </BarChart>
             </ResponsiveContainer>
 
-            {geomProcedure && !(geomProcedure as any).error && (
+            {geomProcedure && !('error' in geomProcedure) && (
               <div className="mt-4 rounded-lg bg-slate-50 p-4 text-sm space-y-1">
                 <div>n = <strong>{geomProcedure.n}</strong></div>
-                <div>Σ ln(1 + rᵢ) = <strong>{geomProcedure.sumLog.toFixed(8)}</strong></div>
-                <div>media de ln = <strong>{geomProcedure.meanLog.toFixed(8)}</strong></div>
+                <div>Σ ln(1 + rᵢ) = <strong>{geomProcedure.sumLog!.toFixed(8)}</strong></div>
+                <div>media de ln = <strong>{geomProcedure.meanLog!.toFixed(8)}</strong></div>
                 <div>
                   G = exp(media ln) − 1 ={' '}
                   <strong className="text-emerald-700">
-                    {geomProcedure.geom.toFixed(6)} ({(geomProcedure.geom * 100).toFixed(4)} %)
+                    {geomProcedure.geom!.toFixed(6)} ({(geomProcedure.geom! * 100).toFixed(4)} %)
                   </strong>
                 </div>
               </div>
@@ -649,7 +658,7 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis dataKey="name" angle={-35} textAnchor="end" interval={0} height={60} tick={{ fontSize: 11 }} />
                 <YAxis tickFormatter={(v) => `${v.toFixed(2)}%`} tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v: number) => [`${v.toFixed(4)} %`, 'Geométrica']} />
+                <Tooltip formatter={(v: any) => [`${Number(v).toFixed(4)} %`, 'Geométrica']} />
                 <Bar dataKey="value" fill="#10b981" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -664,7 +673,7 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis dataKey="name" angle={-35} textAnchor="end" interval={0} height={60} tick={{ fontSize: 11 }} />
                 <YAxis tickFormatter={(v) => v.toFixed(4)} tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v: number) => [v.toFixed(6), 'Geométrica']} />
+                <Tooltip formatter={(v: any) => [`${Number(v).toFixed(6)}`, 'Geométrica']} />
                 <Bar dataKey="value" fill="#059669" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -673,14 +682,43 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
 
         {/* ========== Frontera eficiente con Plotly ========== */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h4 className="mb-1 text-sm font-semibold text-slate-800">
-            Frontera eficiente (simulación Monte Carlo)
-          </h4>
-          <p className="mb-4 text-xs text-slate-500">
-            Puedes hacer <strong>zoom</strong> (rueda del mouse o seleccionar área) y{' '}
-            <strong>desplazarte</strong> (clic + arrastrar). Doble clic para resetear.
-            Pasa el mouse sobre un punto para ver los pesos del portafolio.
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+            <div>
+              <h4 className="text-sm font-semibold text-slate-800">
+                Frontera eficiente (simulación Monte Carlo)
+              </h4>
+              <p className="text-xs text-slate-500 mt-1">
+                Puedes hacer <strong>zoom</strong> y <strong>desplazarte</strong>. Doble clic para resetear.
+              </p>
+            </div>
+
+            {/* ========== SELECTORES ========== */}
+            <div className="flex flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-slate-600">Media:</span>
+                <select
+                  value={meanType}
+                  onChange={(e) => setMeanType(e.target.value as 'arithmetic' | 'geometric')}
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs"
+                >
+                  <option value="arithmetic">Aritmética</option>
+                  <option value="geometric">Geométrica</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-slate-600">Riesgo:</span>
+                <select
+                  value={riskType}
+                  onChange={(e) => setRiskType(e.target.value as 'std' | 'variance')}
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs"
+                >
+                  <option value="std">Desviación estándar</option>
+                  <option value="variance">Varianza</option>
+                </select>
+              </div>
+            </div>
+          </div>
 
           {portfolioSimulation === null ? (
             <p className="text-sm text-slate-500">
@@ -693,12 +731,15 @@ export default function PortfolioViewer({ rows }: { rows: Row[] }) {
                 height: 560,
                 margin: { t: 30, r: 30, b: 60, l: 70 },
                 xaxis: {
-                  title: 'Riesgo (desviación estándar)',
+                  title: riskType === 'std' ? 'Riesgo (desviación estándar)' : 'Riesgo (varianza)',
                   zeroline: false,
                   gridcolor: '#e2e8f0',
                 },
                 yaxis: {
-                  title: 'Rendimiento esperado',
+                  title:
+                    meanType === 'geometric'
+                      ? 'Rendimiento esperado (media geométrica)'
+                      : 'Rendimiento esperado (media aritmética)',
                   tickformat: '.2%',
                   zeroline: false,
                   gridcolor: '#e2e8f0',

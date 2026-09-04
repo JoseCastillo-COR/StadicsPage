@@ -6,7 +6,7 @@ import Convertidor from './pages/Convertidor'
 import './App.css'
 
 // Placeholders temporales (los crearemos en los siguientes pasos)
-function AnalisisPage() {
+/*function AnalisisPage() {
   return (
     <div className="mx-auto max-w-6xl px-4 py-10">
       <h1 className="text-2xl font-bold text-slate-900">Análisis de Portafolios</h1>
@@ -26,7 +26,7 @@ function ConvertidorPage() {
       </p>
     </div>
   )
-}
+}*/
 
 export default function App() {
   return (
